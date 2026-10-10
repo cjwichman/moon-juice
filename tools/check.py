@@ -95,7 +95,8 @@ def main():
             n, sk, ms, out = int(sys.argv[2]), json.loads(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
             if len(sys.argv) > 6:   # optional JSON of level-field overrides, applied before the run
                 pg.evaluate('Object.assign(MJ.HAND[%d], %s)' % (n - 1, sys.argv[6]))
-            print(json.dumps(pg.evaluate('MJ.simStroke(%d, %s, 1, %d)' % (n, json.dumps(sk), ms))))
+            seed = int(os.environ.get('SEED', '1'))
+            print(json.dumps(pg.evaluate('MJ.simStroke(%d, %s, %d, %d)' % (n, json.dumps(sk), seed, ms))))
             pg.screenshot(path=out)
         elif mode == 'js':
             print(json.dumps(pg.evaluate(sys.argv[2])))

@@ -74,15 +74,15 @@
   #title h1 span { display: block; color: var(--cyan); text-shadow: 0 0 6px rgba(62,240,255,.9), 0 0 26px rgba(62,240,255,.5), 4px 5px 0 #4b1a8a; transform: translateX(28px); }
   #title p { margin: 0; color: var(--muted); font-size: 18px; text-align: center; max-width: 300px; }
   #grid {
-    display: grid; grid-template-columns: repeat(4, 64px); gap: 10px; margin-top: 6px;
+    display: grid; grid-template-columns: repeat(5, 56px); gap: 8px; margin-top: 6px;
   }
   .tile {
-    width: 64px; height: 64px; border-radius: 16px; border: 2px solid rgba(62,240,255,.5);
-    background: rgba(18,6,38,.75); color: var(--ink); font: inherit; font-size: 24px;
+    width: 56px; height: 56px; border-radius: 14px; border: 2px solid rgba(62,240,255,.5);
+    background: rgba(18,6,38,.75); color: var(--ink); font: inherit; font-size: 22px;
     display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
     cursor: pointer; padding: 0;
   }
-  .tile small { font-size: 11px; letter-spacing: 1px; color: var(--lime); min-height: 12px; }
+  .tile small { font-size: 10px; letter-spacing: 1px; color: var(--lime); min-height: 12px; }
   .tile.locked { opacity: .35; border-color: rgba(156,139,201,.4); cursor: default; }
   .tile.deep { border-color: rgba(255,63,210,.7); color: var(--magenta); }
   .tile.deep small { color: var(--magenta); letter-spacing: 0; }
@@ -182,6 +182,8 @@ const R = 5;                     // liquid particle radius
 const STROKE_T = 10;             // drawn line thickness
 const SAMPLE = 8;                // min spacing between sampled stroke points
 const PEG_R = 9;
+const BUMP_R = 13;
+const DROP_DELAY = 700;         // ms after the pour starts before a hanging cup is released
 const CUP = { h: 80, tw: 72, bw: 52, t: 7 };   // outer height, top width, bottom width, wall thickness
 const SUBSTEP = 1000 / 120;
 const MAX_SPEED = 12;            // speed cap (per base step) that prevents tunneling through thin walls
@@ -191,9 +193,13 @@ const MAX_SPIN = 0.12;            // angular speed cap (rad per base step) that 
 /* ---------- Level data ----------
    plats: static slabs {x, y, w, h, a (deg), k: 'rock' | 'ice'}; x, y is the slab center.
    pegs:  static pins {x, y}.
-   noz:   dispensers {x, y, a (deg, 90 = straight down)}.
+   bumpers: static balls {x, y} that liquid bounces off.
+   noz:   saucers {x, y, a (deg, 90 = straight down), dry}. The saucer is a solid body a line can
+          rest on. dry: true pours nothing (an obstacle or a support only).
    cup:   {p: index of the slab it sits on, x, slide}; y and tilt come from the slab surface.
           slide: true makes the cup a free body (ice levels). Otherwise the cup is fixed.
+          {x, y, drop: true} hangs the cup in the air at bottom-centre (x, y); it is released
+          DROP_DELAY ms after the pour starts.
    ink:   max line length. drops: particles per dispenser. fill: target fill fraction. */
 const GROUND = { x: 200, y: 760, w: 440, h: 280, a: 0, k: 'rock' };
 const HAND = [
@@ -206,42 +212,72 @@ const HAND = [
   // 3. Ledge spill onto a pinned ramp
   { noz: [{ x: 60, y: 140, a: 90 }], plats: [GROUND, { x: 70, y: 470, w: 140, h: 24, a: 8, k: 'rock' }, { x: 6, y: 430, w: 12, h: 70, a: 0, k: 'rock' }], pegs: [{ x: 175, y: 520 }],
     cup: { p: 0, x: 300 }, ink: 190, drops: 110, fill: 0.5 },
-  // 4. Over the pillar
+  // 4. Angled saucer: catch the arc
+  { noz: [{ x: 50, y: 170, a: 40 }], plats: [GROUND], pegs: [{ x: 160, y: 400 }],
+    cup: { p: 0, x: 330 }, ink: 400, drops: 110, fill: 0.5, tip: 'Catch the arc' },
+  // 5. Over the pillar
   { noz: [{ x: 320, y: 140, a: 90 }], plats: [GROUND, { x: 200, y: 545, w: 24, h: 150, a: 0, k: 'rock' }], pegs: [{ x: 330, y: 380 }],
     cup: { p: 0, x: 100 }, ink: 400, drops: 110, fill: 0.5 },
-  // 5. Two saucers, one long ramp
+  // 6. Hanging cup over a gap
+  { noz: [{ x: 120, y: 150, a: 90 }], plats: [{ x: 30, y: 500, w: 60, h: 24, a: 0, k: 'rock' }, { x: 330, y: 640, w: 140, h: 120, a: 0, k: 'rock' }], pegs: [{ x: 200, y: 500 }],
+    cup: { x: 120, y: 380, drop: true }, ink: 210, drops: 110, fill: 0.5, tip: 'The cup drops when you let go. Catch it' },
+  // 7. Two saucers, one long ramp
   { noz: [{ x: 90, y: 140, a: 90 }, { x: 230, y: 140, a: 90 }], plats: [GROUND], pegs: [{ x: 60, y: 380 }],
     cup: { p: 0, x: 330 }, ink: 490, drops: 60, fill: 0.65, tip: 'Two saucers, one line' },
-  // 6. Ice, steeper
+  // 8. A parked saucer is the only support
+  { noz: [{ x: 90, y: 150, a: 90 }, { x: 160, y: 440, a: 90, dry: true }], plats: [GROUND], pegs: [],
+    cup: { p: 0, x: 340 }, ink: 440, drops: 110, fill: 0.5, tip: 'Rest the line on the parked saucer' },
+  // 9. Ice, steeper
   { noz: [{ x: 185, y: 140, a: 90 }], plats: [{ x: 210, y: 450, w: 360, h: 26, a: 20, k: 'ice' }], pegs: [],
     cup: { p: 0, x: 120, slide: true }, ink: 160, drops: 90, fill: 0.55 },
-  // 7. Raised cup
-  { noz: [{ x: 60, y: 140, a: 90 }], plats: [{ x: 70, y: 330, w: 140, h: 24, a: 8, k: 'rock' }, { x: 6, y: 300, w: 12, h: 60, a: 0, k: 'rock' }, { x: 320, y: 520, w: 160, h: 26, a: 0, k: 'rock' }], pegs: [{ x: 175, y: 380 }],
-    cup: { p: 2, x: 330 }, ink: 240, drops: 110, fill: 0.55 },
-  // 8. Two pins, one steep ramp
-  { noz: [{ x: 330, y: 140, a: 90 }], plats: [GROUND], pegs: [{ x: 350, y: 300 }, { x: 230, y: 420 }],
-    cup: { p: 0, x: 80 }, ink: 550, drops: 110, fill: 0.55 },
-  // 9. Deflector
+  // 10. Landing pad across two pins
+  { noz: [{ x: 150, y: 140, a: 90 }], plats: [], pegs: [{ x: 85, y: 520 }, { x: 215, y: 520 }],
+    cup: { x: 150, y: 380, drop: true }, ink: 260, drops: 110, fill: 0.5, tip: 'Give the cup somewhere to land' },
+  // 11. Bumpers
+  { noz: [{ x: 140, y: 140, a: 90 }], plats: [GROUND, { x: 340, y: 520, w: 120, h: 24, a: 0, k: 'rock' }], pegs: [], bumpers: [{ x: 140, y: 300 }, { x: 95, y: 380 }, { x: 185, y: 380 }],
+    cup: { p: 1, x: 345 }, ink: 260, drops: 120, fill: 0.5, tip: 'Bouncy' },
+  // 12. Deflector
   { noz: [{ x: 200, y: 140, a: 90 }], plats: [GROUND, { x: 200, y: 330, w: 60, h: 18, a: -30, k: 'rock' }], pegs: [{ x: 120, y: 420 }],
     cup: { p: 0, x: 320 }, ink: 430, drops: 110, fill: 0.55 },
-  // 10. Ice chute and a bridge
+  // 13. Angled saucer over a pillar
+  { noz: [{ x: 360, y: 180, a: 150 }], plats: [GROUND, { x: 200, y: 560, w: 24, h: 120, a: 0, k: 'rock' }], pegs: [{ x: 300, y: 430 }],
+    cup: { p: 0, x: 90 }, ink: 350, drops: 110, fill: 0.5 },
+  // 14. Ice chute and a bridge
   { noz: [{ x: 70, y: 140, a: 90 }], plats: [GROUND, { x: 120, y: 380, w: 200, h: 24, a: 22, k: 'ice' }, { x: 350, y: 540, w: 100, h: 24, a: 0, k: 'rock' }], pegs: [],
     cup: { p: 2, x: 350 }, ink: 190, drops: 110, fill: 0.55, tip: 'Bridge the gap' },
-  // 11. Ice, sliding left
-  { noz: [{ x: 170, y: 140, a: 90 }], plats: [{ x: 230, y: 440, w: 320, h: 26, a: -18, k: 'ice' }], pegs: [],
-    cup: { p: 0, x: 310, slide: true }, ink: 160, drops: 100, fill: 0.55, tip: 'Make the cup stop under the saucer' },
-  // 12. Ledge over a pillar
+  // 15. Hanging cup at a cliff edge
+  { noz: [{ x: 270, y: 140, a: 90 }], plats: [{ x: 100, y: 560, w: 200, h: 24, a: 0, k: 'rock' }], pegs: [{ x: 330, y: 560 }],
+    cup: { x: 270, y: 400, drop: true }, ink: 270, drops: 110, fill: 0.5, tip: 'Extend the ledge' },
+  // 16. Bridge across two parked saucers
+  { noz: [{ x: 200, y: 140, a: 90 }, { x: 110, y: 400, a: 90, dry: true }, { x: 290, y: 470, a: 90, dry: true }], plats: [GROUND], pegs: [],
+    cup: { p: 0, x: 350 }, ink: 370, drops: 110, fill: 0.5, tip: 'Two saucers, one bridge' },
+  // 17. Two pins, one steep ramp
+  { noz: [{ x: 330, y: 140, a: 90 }], plats: [GROUND], pegs: [{ x: 350, y: 300 }, { x: 230, y: 420 }],
+    cup: { p: 0, x: 80 }, ink: 550, drops: 110, fill: 0.55 },
+  // 18. Angled saucer into bumpers
+  { noz: [{ x: 40, y: 160, a: 35 }], plats: [GROUND], pegs: [], bumpers: [{ x: 220, y: 330 }, { x: 300, y: 400 }, { x: 180, y: 430 }],
+    cup: { p: 0, x: 350 }, ink: 335, drops: 120, fill: 0.5 },
+  // 19. Hanging cup onto ice
+  { noz: [{ x: 215, y: 140, a: 90 }], plats: [{ x: 200, y: 520, w: 340, h: 26, a: 18, k: 'ice' }], pegs: [],
+    cup: { x: 110, y: 330, drop: true }, ink: 160, drops: 100, fill: 0.5, tip: 'Catch, then stop' },
+  // 20. Ledge over a pillar
   { noz: [{ x: 340, y: 130, a: 90 }], plats: [GROUND, { x: 200, y: 530, w: 24, h: 180, a: 0, k: 'rock' }, { x: 340, y: 360, w: 100, h: 22, a: 0, k: 'rock' }, { x: 394, y: 330, w: 12, h: 60, a: 0, k: 'rock' }], pegs: [],
     cup: { p: 0, x: 90 }, ink: 390, drops: 110, fill: 0.6 },
-  // 13. Ledge spill across two pins
+  // 21. Fountain over a wall
+  { noz: [{ x: 70, y: 520, a: -60, v: 9 }], plats: [GROUND, { x: 200, y: 550, w: 24, h: 140, a: 0, k: 'rock' }], pegs: [],
+    cup: { p: 0, x: 362 }, ink: 220, drops: 120, fill: 0.5, tip: 'Fountain' },
+  // 22. Landing pad on a parked saucer
+  { noz: [{ x: 225, y: 140, a: 90 }, { x: 200, y: 520, a: 90, dry: true }], plats: [GROUND], pegs: [{ x: 110, y: 510 }],
+    cup: { x: 225, y: 380, drop: true }, ink: 280, drops: 110, fill: 0.5, tip: 'Make a landing pad' },
+  // 23. Ledge spill across two pins
   { noz: [{ x: 55, y: 130, a: 90 }], plats: [GROUND, { x: 55, y: 270, w: 110, h: 22, a: 6, k: 'rock' }, { x: 6, y: 240, w: 12, h: 60, a: 0, k: 'rock' }], pegs: [{ x: 170, y: 450 }, { x: 270, y: 500 }],
     cup: { p: 0, x: 345 }, ink: 290, drops: 110, fill: 0.6 },
-  // 14. Two saucers, tighter
-  { noz: [{ x: 150, y: 140, a: 90 }, { x: 300, y: 140, a: 90 }], plats: [GROUND], pegs: [{ x: 120, y: 400 }],
-    cup: { p: 0, x: 350 }, ink: 430, drops: 45, fill: 0.6 },
-  // 15. Ice, long slide
+  // 24. Ice, long slide
   { noz: [{ x: 215, y: 140, a: 90 }], plats: [{ x: 180, y: 420, w: 330, h: 26, a: 20, k: 'ice' }], pegs: [],
     cup: { p: 0, x: 90, slide: true }, ink: 160, drops: 100, fill: 0.6, tip: 'Make the cup stop under the saucer' },
+  // 25. Catch the cup under the arc
+  { noz: [{ x: 40, y: 150, a: 35, v: 7 }], plats: [{ x: 110, y: 570, w: 220, h: 24, a: 0, k: 'rock' }], pegs: [{ x: 370, y: 557 }],
+    cup: { x: 262, y: 420, drop: true }, ink: 280, drops: 110, fill: 0.55, tip: 'Catch the cup under the arc' },
 ];
 
 /* Seeded generator for levels past the hand-built set. Each layout is a jittered copy of a
@@ -251,10 +287,10 @@ function rng(seed) {
   let a = seed >>> 0;
   return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
-const GEN_TYPES = ['peg', 'ice', 'ledge', 'twin'];
+const GEN_TYPES = ['peg', 'ice', 'ledge', 'twin', 'drop', 'arc'];
 /* Seeds whose layout failed the automated check (python3 tools/check.py gen). Level n uses the
    n-th seed that is not in this set, so the list can grow without changing earlier levels. */
-const GEN_SKIP = new Set([44, 70, 89, 180]);
+const GEN_SKIP = new Set([]);
 function genSeed(n) {
   let seed = HAND.length, k = HAND.length;
   while (k < n) { seed++; if (!GEN_SKIP.has(seed)) k++; }
@@ -269,9 +305,11 @@ function genParams(n) {
   const tight = Math.min(0.12, k * 0.008);         // ink budget shrinks slowly as levels climb
   let P;
   if (type === 'peg') P = { nx: j(120, 25), px: j(95, 15), py: j(380, 40), cx: j(290, 20) };
-  else if (type === 'ice') P = { ang: j(18, 3), cx: j(125, 10), bx: j(215, 15), sy: j(460, 25) };
+  else if (type === 'ice') P = { ang: j(19, 3), cx: j(125, 10), bx: j(215, 15), sy: j(460, 25) };
   else if (type === 'ledge') { const ly = j(450, 20); P = { ly, px: j(175, 10), py: ly + j(45, 8), cx: j(310, 15) }; }
-  else P = { n1: j(90, 15), n2: j(235, 20), px: j(60, 10), py: j(380, 30), cx: j(320, 10) };
+  else if (type === 'twin') P = { n1: j(90, 15), n2: j(235, 20), px: j(60, 10), py: j(380, 30), cx: j(320, 10) };
+  else if (type === 'drop') { const ly = j(500, 30); P = { lx: j(30, 8), ly, px: j(205, 15), py: ly + j(0, 10), cx: j(120, 15) }; }
+  else P = { nx: j(50, 10), ny: j(170, 20), na: j(40, 5), px: j(160, 10), py: j(410, 15), cx: j(330, 10) };
   return { type, mirror, tight, P };
 }
 function genLevel(n) {
@@ -283,13 +321,19 @@ function genLevel(n) {
   } else if (type === 'ice') {
     const rest = P.bx - 40 + Math.round(80 * Math.sin(P.ang * DEG));   // rim centre once the cup rests against the stopper
     L = { noz: [{ x: rest, y: 140, a: 90 }], plats: [{ x: 200, y: P.sy, w: 340, h: 26, a: P.ang, k: 'ice' }], pegs: [],
-          cup: { p: 0, x: P.cx, slide: true }, ink: 180, drops: 100, fill: 0.5 };
+          cup: { p: 0, x: P.cx, slide: true }, ink: 180, drops: 100, fill: 0.55 };
   } else if (type === 'ledge') {
     L = { noz: [{ x: 60, y: 140, a: 90 }], plats: [GROUND, { x: 70, y: P.ly, w: 140, h: 24, a: 8, k: 'rock' }, { x: 6, y: P.ly - 40, w: 12, h: 70, a: 0, k: 'rock' }], pegs: [{ x: P.px, y: P.py }],
           cup: { p: 0, x: P.cx }, ink: 220, drops: 120, fill: 0.5 };
-  } else {
+  } else if (type === 'twin') {
     L = { noz: [{ x: P.n1, y: 140, a: 90 }, { x: P.n2, y: 140, a: 90 }], plats: [GROUND], pegs: [{ x: P.px, y: P.py }],
           cup: { p: 0, x: P.cx }, ink: 520, drops: 60, fill: 0.5 };
+  } else if (type === 'drop') {
+    L = { noz: [{ x: P.cx, y: 150, a: 90 }], plats: [{ x: P.lx, y: P.ly, w: 60, h: 24, a: 0, k: 'rock' }], pegs: [{ x: P.px, y: P.py }],
+          cup: { x: P.cx, y: 380, drop: true }, ink: 280, drops: 110, fill: 0.5 };
+  } else {
+    L = { noz: [{ x: P.nx, y: P.ny, a: P.na }], plats: [GROUND], pegs: [{ x: P.px, y: P.py }],
+          cup: { p: 0, x: P.cx }, ink: 420, drops: 110, fill: 0.5 };
   }
   L.ink = Math.round(L.ink * (1 - tight));
   if (mirror) {
@@ -314,6 +358,8 @@ function genSolution(n) {
   if (type === 'peg') sk = lineOver([P.px, P.py - 9], [P.cx - 36, rimTop], P.px - 45, P.cx - 18);
   else if (type === 'ledge') sk = lineOver([P.px, P.py - 9], [P.cx - 36, rimTop], Math.max(P.px - 25, 152), P.cx - 20);
   else if (type === 'twin') sk = lineOver([P.px, P.py - 9], [P.cx - 36, rimTop], P.px - 40, P.cx - 26);
+  else if (type === 'drop') sk = lineOver([P.lx + 30, P.ly - 12], [P.px, P.py - 9], P.lx + 5, P.px + 15);
+  else if (type === 'arc') sk = lineOver([P.px, P.py - 9], [P.cx - 36, rimTop], P.px - 50, P.cx - 20);
   else {
     const p = { x: 200, y: P.sy, w: 340, h: 26, a: P.ang };
     const s = x => surfaceAt(p, x), l = s(P.bx - 15), rr = s(P.bx + 15), up = 10;
@@ -328,6 +374,7 @@ function getLevel(n) { return JSON.parse(JSON.stringify(n <= HAND.length ? HAND[
 const SAVE_KEY = 'moonjuice.v1';
 let save = { unlocked: 1, stars: {}, deep: HAND.length + 1, muted: false };
 try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (s) save = Object.assign(save, s); } catch (e) {}
+save.deep = Math.max(save.deep, HAND.length + 1);   // saves from a build with fewer hand-built levels
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
 
 /* ---------- Audio ---------- */
@@ -410,7 +457,9 @@ let engine, level, levelNum = 1, state = 'title';
 let statics = [], cup = null, cupRefOff = null, stroke = null, strokeLocal = null;
 let drawing = false, pts = [], inkUsed = 0;
 let particles = [], emitted = 0, emitClock = 0, pourT = 0, emitDoneT = 0, holdT = 0, fillCount = 0, target = 30;
-let lastPlop = 0, faceMood = 0, tNow = 0, endT = 0;
+let lastPlop = 0, faceMood = 0, tNow = 0, endT = 0, cupHeld = false, releaseT = 0, cupSettled = false, cupStill = 0;
+// On a hanging-cup level the saucer waits until the cup has dropped and come to rest (or 2.5 s), so the pour lands in the resting cup
+function pourReady() { return !level.cup.drop || cupSettled; }
 
 function surfaceAt(p, x) {
   // Top surface point and angle of slab p at world x
@@ -476,13 +525,31 @@ function startLevel(n) {
     b.friction = p.k === 'ice' ? 0 : 1; b.frictionStatic = p.k === 'ice' ? 0 : 2;
     b.plat = p; statics.push(b);
   });
+  // Invisible side walls: the screen edge is solid, so nothing leaves sideways
+  for (const wx of [-10, W + 10]) { const b = Bodies.rectangle(wx, H / 2, 20, H * 2, { isStatic: true, label: 'rock' }); b.friction = 1; statics.push(b); }
   level.pegs.forEach(p => { const b = Bodies.rectangle(p.x, p.y, PEG_R * 3, PEG_R * 2, { isStatic: true, label: 'peg' }); b.friction = 1; b.frictionStatic = 2; statics.push(b); });
+  (level.bumpers || []).forEach(p => { const b = Bodies.circle(p.x, p.y, BUMP_R, { isStatic: true, restitution: 0.9, label: 'bumper' }); b.friction = 0; statics.push(b); });
+  level.noz.forEach(n => {
+    // Hull, dome and spout as one fixed body, so a line can hook over a saucer
+    const a = n.a * DEG;
+    const hull = Bodies.rectangle(n.x, n.y + 1, 58, 14, { chamfer: { radius: 6 } });
+    const dome = Bodies.circle(n.x, n.y - 7, 12);
+    const spout = Bodies.rectangle(n.x + Math.cos(a) * 17, n.y + Math.sin(a) * 17, 12, 18, { angle: a - Math.PI / 2 });
+    const b = Body.create({ parts: [hull, dome, spout], isStatic: true, label: 'rock' });
+    b.friction = 1; b.frictionStatic = 2; statics.push(b);
+  });
   Composite.add(engine.world, statics);
-  const surf = surfaceAt(level.plats[level.cup.p], level.cup.x);
-  cup = buildCup(surf.x, surf.y, surf.a, !!level.cup.slide);
+  if (level.cup.drop) {
+    cup = buildCup(level.cup.x, level.cup.y, 0, true);
+    Body.setStatic(cup, true); cupHeld = true; cupSettled = false; cupStill = 0;     // hangs until released
+  } else {
+    const surf = surfaceAt(level.plats[level.cup.p], level.cup.x);
+    cup = buildCup(surf.x, surf.y, surf.a, !!level.cup.slide); cupHeld = false; cupSettled = true;
+  }
   Composite.add(engine.world, cup);
-  Events.on(engine, 'beforeUpdate', capSpeeds);
-  stroke = null; strokeLocal = null; drawing = false; pts = []; inkUsed = 0; stillSteps = 0;
+  Events.on(engine, 'afterUpdate', capSpeeds);
+  Events.on(engine, 'collisionStart', landStroke);
+  stroke = null; strokeLocal = null; drawing = false; pts = []; inkUsed = 0; stillSteps = 0; stillRef = null; slowSteps = 0;
   particles = []; emitted = 0; emitClock = 0; pourT = 0; emitDoneT = 0; holdT = 0; fillCount = 0; faceMood = 0;
   target = computeTarget(level.fill);
   state = 'draw';
@@ -509,16 +576,40 @@ Matter.Pair.update = function (pair, collision, timestamp) {
   const a = A.label, b = B.label;
   if (a === 'stroke' || b === 'stroke') {
     const other = a === 'stroke' ? B : A, o = other.label;
-    if (o === 'rock' || o === 'ice' || o === 'peg' || (o === 'cup' && other.isStatic)) { pair.friction = GRIP; pair.frictionStatic = 3; }
+    if (o === 'rock' || o === 'ice' || o === 'peg' || o === 'bumper' || (o === 'cup' && other.isStatic)) { pair.friction = GRIP; pair.frictionStatic = 3; }
   }
 };
+/* Contacts here are inelastic, so a body can gain at most one step of gravity per step plus a
+   small allowance for being squeezed. Matter's position solver violates this when a thin body
+   is wedged between two surfaces, which used to launch lines off the screen. */
+const ACCEL_MAX = 0.3, SPIN_ACCEL_MAX = 0.012;
+/* A line landing end-first kept most of its speed as sideways skating. Impacts are plastic, so the
+   line loses most of its velocity the moment it first touches a fixed body. */
+function landStroke(e) {
+  for (const pr of e.pairs) {
+    const A = pr.bodyA.parent, B = pr.bodyB.parent;
+    for (const m of [stroke, cup]) {
+      if (!m || m.isStatic || (A !== m && B !== m)) continue;
+      const o = A === m ? B : A;
+      if (!o.isStatic || o.label === 'drop') continue;
+      if (m === cup) { if (cup.landed) continue; cup.landed = true; }   // a cup is damped on its first landing only, so it can still slide
+      Body.setVelocity(m, { x: m.velocity.x * 0.3, y: m.velocity.y * 0.3 });
+      Body.setAngularVelocity(m, m.angularVelocity * 0.5);
+      m.prevSpeed = Body.getSpeed(m); m.prevSpin = Math.abs(m.angularVelocity);   // so the acceleration cap holds the reduced speed
+    }
+  }
+}
 function capSpeeds() {
   const all = Composite.allBodies(engine.world);
   for (const b of all) {
     if (b.isStatic) continue;
-    const sp = Body.getSpeed(b);
-    if (sp > MAX_SPEED) Body.setSpeed(b, MAX_SPEED);
-    if (Math.abs(b.angularVelocity) > MAX_SPIN) Body.setAngularVelocity(b, Math.sign(b.angularVelocity) * MAX_SPIN);
+    let sp = Body.getSpeed(b);
+    const lim = Math.min(MAX_SPEED, (b.prevSpeed === undefined ? sp : b.prevSpeed) + ACCEL_MAX);
+    if (sp > lim) { Body.setSpeed(b, lim); sp = lim; }
+    let w = b.angularVelocity;
+    const wlim = Math.min(MAX_SPIN, (b.prevSpin === undefined ? Math.abs(w) : b.prevSpin) + SPIN_ACCEL_MAX);
+    if (Math.abs(w) > wlim) { w = Math.sign(w) * wlim; Body.setAngularVelocity(b, w); }
+    b.prevSpeed = sp; b.prevSpin = Math.abs(w);
     if (!isFinite(b.position.x) || !isFinite(b.position.y)) { b.dead = true; }
   }
 }
@@ -593,9 +684,10 @@ function updateInk() {
 function emit() {
   for (const n of level.noz) {
     const a = n.a * DEG, dir = { x: Math.cos(a), y: Math.sin(a) };
-    const sx = n.x + dir.x * 26 + (Math.random() - 0.5) * 6, sy = n.y + dir.y * 26;
+    if (n.dry) continue;
+    const sx = n.x + dir.x * 38 + (Math.random() - 0.5) * 6, sy = n.y + dir.y * 38;
     const p = Bodies.circle(sx, sy, R, { friction: 0.002, frictionStatic: 0, frictionAir: 0.02, restitution: 0.05, density: 0.0006, label: 'drop' });
-    Body.setVelocity(p, { x: dir.x * 2.2 + (Math.random() - 0.5) * 0.3, y: dir.y * 2.2 });
+    Body.setVelocity(p, { x: dir.x * (n.v || 4.5) + (Math.random() - 0.5) * 0.3, y: dir.y * (n.v || 4.5) });
     p.inCup = false;
     particles.push(p); Composite.add(engine.world, p);
   }
@@ -604,23 +696,39 @@ function emit() {
 /* Matter's kinetic friction is a fixed impulse per step rather than a share of the load, so a
    resting line creeps down its supports once liquid piles on it. The line is frozen in place
    after it has been still for a short interval, which keeps every level deterministic. */
-const FREEZE_STEPS = 24;   // consecutive substeps (0.2 s) below the thresholds before the line freezes
-let stillSteps = 0;
+const FREEZE_STEPS = 24;   // substeps (0.2 s) over which the line's centre must stay within 1.5 units to freeze
+let stillSteps = 0, stillRef = null, slowSteps = 0;
 function settleStroke() {
   if (!stroke || stroke.isStatic) return;
-  const still = Body.getSpeed(stroke) < 0.12 && Math.abs(stroke.angularVelocity) < 0.0025;
-  stillSteps = still ? stillSteps + 1 : 0;
-  if (stillSteps >= FREEZE_STEPS) Body.setStatic(stroke, true);
+  // Velocity test: catches a resting line that creeps under position correction
+  const slow = Body.getSpeed(stroke) < 0.12 && Math.abs(stroke.angularVelocity) < 0.0025;
+  slowSteps = slow ? slowSteps + 1 : 0;
+  if (slowSteps >= FREEZE_STEPS) { Body.setStatic(stroke, true); return; }
+  // Position test: a line wedged between two surfaces jitters with nonzero velocity but goes nowhere
+  if (!stillRef || stillSteps >= FREEZE_STEPS) {
+    // A line rotating about a support point moves its centre, so a still centre is enough; the angle test
+    // only has to rule out spinning in place, which a wedged line does by a few degrees either way
+    if (stillRef && Math.hypot(stroke.position.x - stillRef.x, stroke.position.y - stillRef.y) < 1.5 && Math.abs(stroke.angle - stillRef.a) < 0.5) {
+      Body.setStatic(stroke, true); return;
+    }
+    stillRef = { x: stroke.position.x, y: stroke.position.y, a: stroke.angle }; stillSteps = 0;
+  }
+  stillSteps++;
 }
 function step(dt) {
   if (state !== 'pour' && state !== 'win' && state !== 'fail') return;
-  if (state === 'pour') {
+  if (state === 'pour' && pourReady()) {
     emitClock += dt;
     while (emitted < level.drops && emitClock >= 26) { emitClock -= 26; emit(); }
   }
   Engine.update(engine, dt);
   settleStroke();
   pourT += dt;
+  if (cupHeld && state === 'pour' && pourT >= DROP_DELAY) { Body.setStatic(cup, false); cupHeld = false; releaseT = pourT; }
+  if (!cupHeld && level.cup.drop && !cupSettled) {
+    cupStill = Body.getSpeed(cup) < 0.3 ? cupStill + 1 : 0;
+    if (cupStill >= 24 || pourT > releaseT + 2500) cupSettled = true;
+  }
 }
 function evaluate(dt) {
   if (!cup) return;
@@ -683,7 +791,9 @@ function render(t) {
   W2S();
   drawPlats();
   drawPegs();
+  drawBumpers(t);
   drawNozzles(t);
+  drawBeam(t);
   drawCupBack();
   drawLiquid();
   drawStroke();
@@ -722,6 +832,37 @@ function roundRect(x, y, w, h, r) {
   ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
   ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
 }
+function drawBumpers(t) {
+  for (const p of level.bumpers || []) {
+    const g = ctx.createRadialGradient(p.x - 4, p.y - 4, 2, p.x, p.y, BUMP_R);
+    g.addColorStop(0, '#ffb3ec'); g.addColorStop(0.6, '#ff3fd2'); g.addColorStop(1, '#8a1f78');
+    ctx.fillStyle = g; ctx.shadowColor = 'rgba(255,63,210,.9)'; ctx.shadowBlur = 14;
+    ctx.beginPath(); ctx.arc(p.x, p.y, BUMP_R, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(p.x, p.y, BUMP_R - 4, 0, Math.PI * 2); ctx.stroke();
+  }
+}
+function drawBeam(t) {
+  // Tractor beam holding a hanging cup; fades out once the cup is released
+  if (!level.cup.drop) return;
+  const a = cupHeld ? 1 : Math.max(0, 1 - (pourT - releaseT) / 350);
+  if (a <= 0) return;
+  const f = cupFrame(), top = level.cup.y - CUP.h - 64;
+  ctx.save(); ctx.globalAlpha = a;
+  const g = ctx.createLinearGradient(0, top, 0, f.y - CUP.h);
+  g.addColorStop(0, 'rgba(62,240,255,.45)'); g.addColorStop(1, 'rgba(62,240,255,.08)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.moveTo(level.cup.x - 6, top + 6); ctx.lineTo(level.cup.x + 6, top + 6);
+  ctx.lineTo(level.cup.x + CUP.tw / 2 + 4, f.y - CUP.h - 2); ctx.lineTo(level.cup.x - CUP.tw / 2 - 4, f.y - CUP.h - 2); ctx.closePath(); ctx.fill();
+  ctx.setLineDash([4, 6]); ctx.lineDashOffset = -t / 30; ctx.strokeStyle = 'rgba(62,240,255,.6)'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.setLineDash([]);
+  // Mini saucer
+  ctx.translate(level.cup.x, top);
+  ctx.fillStyle = 'rgba(62,240,255,.35)'; ctx.strokeStyle = '#3ef0ff'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.ellipse(0, -4, 9, 8, 0, Math.PI, 0); ctx.fill(); ctx.stroke();
+  const h = ctx.createLinearGradient(0, -4, 0, 6); h.addColorStop(0, '#c9b8ff'); h.addColorStop(1, '#5b45a8');
+  ctx.fillStyle = h; ctx.beginPath(); ctx.ellipse(0, 1, 20, 6, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
 function drawPegs() {
   for (const p of level.pegs) {
     ctx.fillStyle = '#ffe14d'; ctx.shadowColor = 'rgba(255,225,77,.8)'; ctx.shadowBlur = 10;
@@ -733,12 +874,10 @@ function drawPegs() {
 function drawNozzles(t) {
   for (const [i, n] of level.noz.entries()) {
     ctx.save(); ctx.translate(n.x, n.y);
-    const bob = Math.sin(t / 500 + i) * 1.5;
-    ctx.translate(0, bob);
     // Spout
     ctx.save(); ctx.rotate(n.a * DEG - Math.PI / 2);
     ctx.fillStyle = '#6d5aa8'; ctx.fillRect(-6, 8, 12, 18);
-    ctx.fillStyle = '#a6ff3a'; ctx.fillRect(-6, 22, 12, 4);
+    ctx.fillStyle = n.dry ? '#4a3a7a' : '#a6ff3a'; ctx.fillRect(-6, 22, 12, 4);
     ctx.restore();
     // Dome
     ctx.fillStyle = 'rgba(62,240,255,.35)'; ctx.strokeStyle = '#3ef0ff'; ctx.lineWidth = 2;
@@ -750,7 +889,7 @@ function drawNozzles(t) {
     const g = ctx.createLinearGradient(0, -6, 0, 8); g.addColorStop(0, '#c9b8ff'); g.addColorStop(1, '#5b45a8');
     ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(0, 1, 30, 9, 0, 0, Math.PI * 2); ctx.fill();
     for (let k = -2; k <= 2; k++) {
-      const on = Math.floor(t / 220 + k + i) % 3 === 0;
+      const on = !n.dry && Math.floor(t / 220 + k + i) % 3 === 0;
       ctx.fillStyle = on ? '#ff3fd2' : 'rgba(255,63,210,.35)';
       ctx.beginPath(); ctx.arc(k * 11, 3, 2.4, 0, Math.PI * 2); ctx.fill();
     }
@@ -946,13 +1085,15 @@ function simStroke(n, sk, seed, keepMs) {
   if (!valid) { Math.random = r0; state = 'title'; return { st: 'invalid', why, fill: [0, target], ink: 0 }; }
   const ink = inkUsed / level.ink;
   commitStroke(); beginPour();
-  const tr = [];
-  const limit = keepMs || 16000;
-  for (let t = 0; t < limit && (keepMs || state === 'pour'); t += SUBSTEP) { step(SUBSTEP); if (state === 'pour') evaluate(SUBSTEP); }
+  const limit = keepMs || 16000, tr = [];
+  for (let t = 0, i = 0; t < limit && (keepMs || state === 'pour'); t += SUBSTEP, i++) {
+    step(SUBSTEP); if (state === 'pour') evaluate(SUBSTEP);
+    if (keepMs && stroke && i % 6 === 0) tr.push([Math.round(t), Math.round(stroke.position.x), Math.round(stroke.position.y), Math.round(stroke.angle * 57.3), +Body.getSpeed(stroke).toFixed(2), stroke.isStatic ? 1 : 0]);
+  }
   const out = { st: state, fill: [fillCount, target], ink: +ink.toFixed(2), why: document.getElementById('failwhy').textContent,
     cup: [Math.round(cupFrame().x), Math.round(cupFrame().y), Math.round(cup.angle * 57.3)],
     line: stroke ? [Math.round(stroke.position.x), Math.round(stroke.position.y), Math.round(stroke.angle * 57.3)] : null,
-    drops: particles.length };
+    drops: particles.length, trace: tr };
   Math.random = r0;
   if (keepMs) { state = 'pour'; render(0); } else state = 'title';
   return out;
@@ -974,7 +1115,7 @@ function geom(n) {
   const rimL = rot({ x: -CUP.tw / 2, y: -CUP.h }, f.a), rimR = rot({ x: CUP.tw / 2, y: -CUP.h }, f.a);
   return { cup: [Math.round(f.x), Math.round(f.y), Math.round(f.a * 57.3)], rim: [[Math.round(f.x + rimL.x), Math.round(f.y + rimL.y)], [Math.round(f.x + rimR.x), Math.round(f.y + rimR.y)]], target, level };
 }
-window.MJ = { simStroke, searchLevel, geom, genSolution, get dbg() { return { n: pts.length, ink: inkUsed, drawing, sl: strokeLocal && strokeLocal.length }; }, view, startLevel, get state() { return state; }, get fill() { return [fillCount, target]; }, HAND, genLevel, getCup: () => cup && cupFrame() };
+window.MJ = { simStroke, searchLevel, geom, genSolution, get drops() { return particles.map(p => [Math.round(p.position.x), Math.round(p.position.y), +p.velocity.x.toFixed(2), +p.velocity.y.toFixed(2)]); }, get dbg() { return { n: pts.length, ink: inkUsed, drawing, sl: strokeLocal && strokeLocal.length }; }, view, startLevel, get state() { return state; }, get fill() { return [fillCount, target]; }, HAND, genLevel, getCup: () => cup && cupFrame() };
 setMuteIcon(); resize(); buildGrid(); showScreen('title');
 requestAnimationFrame(frame);
 })();

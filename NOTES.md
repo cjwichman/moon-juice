@@ -25,7 +25,15 @@ Requires Python 3 with `playwright` (Chromium installed) and Pillow. Deploy by c
 
 ## Level data
 
-Levels live in `HAND` in `src/game.html`, in a 400 × 700 world. Fields: `noz` (dispensers), `plats` (static slabs, `k: 'rock' | 'ice'`), `pegs` (fixed pins), `cup` (`p` = slab index, `x`, optional `slide: true`), `ink`, `drops`, `fill`, `tip`. Levels past 15 come from `genLevel`, which jitters four verified patterns (`peg`, `ice`, `ledge`, `twin`) from a seed. `GEN_SKIP` lists seeds whose layout failed the automated check. Level n uses the n-th seed not in that set, so adding a seed never changes earlier levels.
+Levels live in `HAND` in `src/game.html`, in a 400 × 700 world. Fields:
+
+- `noz`: saucers `{x, y, a, v, dry}`. `a` is the pour direction in degrees (90 = down, 0 = right, negative = upward). `v` is the exit speed (default 4.5; the fountain in level 21 uses 9). Every saucer is a fixed body (hull, dome, spout), so a line can rest on or hook over one. `dry: true` pours nothing.
+- `plats`: fixed slabs `{x, y, w, h, a, k}` with `k: 'rock' | 'ice'`.
+- `pegs`: fixed pins. `bumpers`: fixed balls with restitution 0.9 that scatter the juice.
+- `cup`: `{p, x}` sits on slab `p`; add `slide: true` for a free cup (ice levels). `{x, y, drop: true}` hangs the cup from a tractor beam at bottom-centre `(x, y)`; it is released 0.7 s after the stroke is committed, and the saucer waits until the cup has come to rest (or 2.5 s) before pouring.
+- `ink`, `drops`, `fill`, `tip`.
+
+Levels past 25 come from `genLevel`, which jitters six verified patterns (`peg`, `ice`, `ledge`, `twin`, `drop`, `arc`) from a seed. `genSolution` builds the matching reference stroke from the same parameters. `GEN_SKIP` lists seeds whose layout failed the automated check. Level n uses the n-th seed not in that set, so adding a seed never changes earlier levels.
 
 ## Physics decisions
 
@@ -37,6 +45,8 @@ Levels live in `HAND` in `src/game.html`, in a 400 × 700 world. Fields: `noz` (
 - Fill target = interior area to the fill line × 0.85 hexagonal packing ÷ particle area. A full cup holds about 40 drops.
 - A stroke may not start within 8 units of a body and may not pass within 7 units of one (`clearStart`, `blocked`). A line committed while overlapping a body is kicked away violently.
 - Physics substep is 1000/120 ms. Raising it to 1000/60 made friction worse in the first build.
+- Lines used to fly off the screen. Cause: a thin line wedged between two surfaces (a cup wall and the ground, say) is popped out by Matter's position solver at full speed, and a line landing end-first kept its fall speed as sideways skating. Three guards fix this: `capSpeeds` allows a body to gain at most `ACCEL_MAX` speed per step (contacts here are inelastic, so nothing but gravity should accelerate a body), `landStroke` scales a line's velocity by 0.3 on every first contact with a fixed body (a free cup gets this once, on landing, so it can still slide on ice), and `settleStroke` freezes a line whose centre has stayed within 1.5 units for 0.2 s even if its velocity is nonzero (the wedged-jitter case). Invisible walls at x = −10 and x = 410 make the screen edge solid.
+- Juice leaves a saucer 38 units from its centre at speed 4.5 so a sideways spout clears the hull.
 
 ## Level design rules
 
@@ -49,9 +59,10 @@ Levels live in `HAND` in `src/game.html`, in a 400 × 700 world. Fields: `noz` (
 
 ## Status
 
-All 15 hand-built levels pass `check.py all`. Generated seeds 16–219 pass `check.py gen` with four seeds skipped. Seeds beyond that are unverified. The test hooks on `window.MJ` are left in the shipped file; they are inert during play.
+All 25 hand-built levels pass `check.py all`. Generated seeds 26–225 pass `check.py gen` with no seeds skipped. Seeds beyond that are unverified. The test hooks on `window.MJ` are left in the shipped file; they are inert during play.
 
 ## Progress log
 
 - 2026-10-03 (earlier) — First build in chat: full UI, rendering, audio, free cup. Levels 3 and 5–14 failed verification. Chat stalled repeatedly on regenerating the file.
+- 2026-10-10 — Launch bug fixed (acceleration cap, plastic landings, position-based freeze, side walls). Saucers are solid bodies, with `dry` and angled/fountain variants. Added bumpers and hanging cups. Level set rebuilt as 25 levels (12 kept, 13 new) and the generator gained `drop` and `arc` templates. Level grid is now 5 columns.
 - 2026-10-03 — Rebuilt from the earlier source on disk. Fixed cup, grip override, stroke freezing, air friction 0.02. Redesigned levels 3, 5–10, 12–14 and retuned the ice levels. Added `genSolution` so generated levels are checked automatically. Icon set rendered. Clean repo layout.
